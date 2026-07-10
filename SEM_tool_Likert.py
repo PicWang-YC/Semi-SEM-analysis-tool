@@ -2,7 +2,6 @@ import os
 import re
 import uuid
 import subprocess
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -487,7 +486,7 @@ def step6_paths_sem_mediation():
     with col1:
         if st.button("LLM 推荐路径"):
             try:
-                from LLM_SEM import generate_sem_paths
+                from LLM_Path import generate_sem_paths
                 paths = generate_sem_paths(constructs, [], [])
                 st.session_state["paths"] = paths
                 st.success(f"生成 {len(paths)} 条路径")

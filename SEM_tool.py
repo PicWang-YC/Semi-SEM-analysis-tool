@@ -1,13 +1,13 @@
 import subprocess
 import streamlit as st
 import pandas as pd
-from Data_Analyzer import DataAnalyzer
+from Data_cleaning import DataAnalyzer
 import numpy as np
 import sklearn
 from factor_analyzer.factor_analyzer import calculate_kmo, calculate_bartlett_sphericity
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from scipy.stats import boxcox
-from LLM_SEM import generate_sem_paths
+from LLM_Path import generate_sem_paths
 from LLM_Construct import generate_constructs
 # =========================
 # 页面配置
@@ -1014,7 +1014,7 @@ print(summary(fit, fit.measures = TRUE, standardized = TRUE))
         endo = st.session_state.get("endogenous_vars", [])
 
         try:
-            from LLM_SEM import generate_sem_paths  # 你的LLM模块
+            from LLM_Path import generate_sem_paths  # 你的LLM模块
 
             paths = generate_sem_paths(constructs, exo, endo)
 
