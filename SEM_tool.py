@@ -84,8 +84,18 @@ def build_lavaan_model():
         return name
 
     lines = []
+    fixed_variance_lines = []
 
-    for c in constructs:
+    measurement_constructs = list(constructs)
+    for con in mapping.values():
+        if con and con not in measurement_constructs:
+            measurement_constructs.append(con)
+
+    second_order_parents = set(sub_map.keys())
+
+    for c in measurement_constructs:
+        if c in second_order_parents:
+            continue
         indicators = [v for v, con in mapping.items() if con == c]
         if len(indicators) >= 2:
             if ident_method == "fix_loading":
@@ -93,12 +103,38 @@ def build_lavaan_model():
                 rest = indicators[1:]
                 line = f"{safe_name(c)} =~ 1*{safe_name(first)} + " + " + ".join(safe_name(v) for v in rest)
             else:
-                line = f"{safe_name(c)} =~ " + " + ".join(safe_name(v) for v in indicators)
+                first = indicators[0]
+                rest = indicators[1:]
+                line = f"{safe_name(c)} =~ NA*{safe_name(first)}"
+                if rest:
+                    line += " + " + " + ".join(safe_name(v) for v in rest)
+                fixed_variance_lines.append(f"{safe_name(c)} ~~ 1*{safe_name(c)}")
             lines.append(line)
 
     for parent, subs in sub_map.items():
-        if len(subs) >= 2:
-            lines.append(f"{safe_name(parent)} =~ " + " + ".join(safe_name(s) for s in subs))
+        valid_subs = [
+            s for s in subs
+            if len([v for v, con in mapping.items() if con == s]) >= 2
+        ]
+        direct_indicators = [v for v, con in mapping.items() if con == parent]
+        parent_indicators = valid_subs + direct_indicators
+        if len(parent_indicators) >= 2:
+            if ident_method == "fix_loading":
+                first = parent_indicators[0]
+                rest = parent_indicators[1:]
+                line = f"{safe_name(parent)} =~ 1*{safe_name(first)}"
+                if rest:
+                    line += " + " + " + ".join(safe_name(s) for s in rest)
+            else:
+                first = parent_indicators[0]
+                rest = parent_indicators[1:]
+                line = f"{safe_name(parent)} =~ NA*{safe_name(first)}"
+                if rest:
+                    line += " + " + " + ".join(safe_name(s) for s in rest)
+                fixed_variance_lines.append(f"{safe_name(parent)} ~~ 1*{safe_name(parent)}")
+            lines.append(line)
+
+    lines.extend(fixed_variance_lines)
 
     for p in paths:
         if p["from"] != p["to"]:
@@ -110,6 +146,31 @@ def build_lavaan_model():
         lines.append(f"{safe_name(pair[0])} ~~ {safe_name(pair[1])}")
 
     return "\n".join(lines)
+
+
+def build_single_construct_cfa_model(construct, indicators):
+    ident_method = st.session_state.get("ident_method", "fix_loading")
+
+    def safe_name(name):
+        if any(c in name for c in [' ', '-', '/', '(', ')', '.']):
+            return f"`{name}`"
+        return name
+
+    if len(indicators) < 2:
+        return ""
+
+    if ident_method == "fix_loading":
+        first = indicators[0]
+        rest = indicators[1:]
+        return f"{safe_name(construct)} =~ 1*{safe_name(first)} + " + " + ".join(safe_name(v) for v in rest)
+
+    first = indicators[0]
+    rest = indicators[1:]
+    model = f"{safe_name(construct)} =~ NA*{safe_name(first)}"
+    if rest:
+        model += " + " + " + ".join(safe_name(v) for v in rest)
+    model += f"\n{safe_name(construct)} ~~ 1*{safe_name(construct)}"
+    return model
 
 
 def run_r_script(script_path):
@@ -458,71 +519,68 @@ def step_sem():
             list(options.keys())
         )
 
-    if st.button("应用该方案"):
+        selected_preview = options[choice]
+        if selected_preview.get("subconstructs"):
+            st.write("LLM 识别到的潜在子构念：")
+            for parent, children in selected_preview["subconstructs"].items():
+                st.write(f"  {parent} ← {children}")
+
+    if options and st.button("应用该方案"):
 
         selected = options[choice]
 
-        constructs = list(selected["constructs"].keys())
+        construct_dict = selected.get("constructs", {})
+        subconstructs = selected.get("subconstructs", {})
+        constructs = list(construct_dict.keys())
+
+        for parent, children in subconstructs.items():
+            if parent not in constructs:
+                constructs.append(parent)
+            for child in children:
+                if child not in constructs:
+                    constructs.append(child)
 
         mapping = {}
-        for c, vars_ in selected["constructs"].items():
+        for c, vars_ in construct_dict.items():
             for v in vars_:
                 mapping[v] = c
 
         st.session_state["constructs"] = constructs
         st.session_state["measurement_model"] = mapping
+        st.session_state["subconstruct_map"] = subconstructs
         st.session_state["exogenous_vars"] = selected.get("exogenous", [])
+        for i, construct_name in enumerate(constructs):
+            st.session_state[f"construct_{i}"] = construct_name
 
-        st.success("已自动填充构念与变量归属（可手动修改）")
+        if subconstructs:
+            st.success("已自动填充构念、子构念关系与变量归属（可手动修改）")
+        else:
+            st.success("已自动填充构念与变量归属（可手动修改）")
         st.rerun()
 
 
 
-    # 构念定义
+    # 构念定义 + 变量归属 + EFA 诊断
     st.subheader("Step 5.1 构念定义")
     st.caption("⚠️ 构念名称请勿包含空格或特殊字符，建议用下划线，如 Perceptual_State")
 
-    n_constructs = st.number_input("构念数量", min_value=1, max_value=10, value=3, step=1)
+    existing_constructs = st.session_state.get("constructs", [])
+    default_construct_count = max(1, len(existing_constructs) or 3)
+    n_constructs = st.number_input(
+        "构念数量",
+        min_value=1,
+        max_value=100,
+        value=default_construct_count,
+        step=1
+    )
     construct_names = []
     for i in range(n_constructs):
-        name = st.text_input(f"构念 {i+1} 名称", value=f"Factor{i+1}", key=f"construct_{i}")
+        default_name = existing_constructs[i] if i < len(existing_constructs) else f"Factor{i+1}"
+        name = st.text_input(f"构念 {i+1} 名称", value=default_name, key=f"construct_{i}")
         construct_names.append(name)
     st.session_state["constructs"] = construct_names
 
-    # 子构念
-    st.subheader("Step 5.2 子构念（二阶构念）设置")
-
-    if "subconstruct_map" not in st.session_state:
-        st.session_state["subconstruct_map"] = {}
-    sub_map = st.session_state["subconstruct_map"]
-
-    parent = st.selectbox("父构念", construct_names, key="sub_parent")
-    children = st.multiselect(
-        "子构念",
-        [c for c in construct_names if c != parent],
-        key="sub_children"
-    )
-
-    if st.button("添加子构念关系"):
-        if len(children) < 2:
-            st.warning("至少需要2个子构念")
-        else:
-            sub_map[parent] = children
-            st.session_state["subconstruct_map"] = sub_map
-            st.success(f"{parent} ← {children}")
-
-    if sub_map:
-        st.write("当前子构念结构：")
-        for k, v in sub_map.items():
-            st.write(f"  {k} ← {v}")
-        if st.button("清空子构念设置"):
-            st.session_state["subconstruct_map"] = {}
-            st.rerun()
-    else:
-        st.info("尚未设置子构念")
-
-    # 变量归属
-    st.subheader("Step 5.3 变量归属（测量模型）")
+    st.write("**变量归属（测量模型）**")
 
     all_vars = df.columns.tolist()
 
@@ -531,6 +589,12 @@ def step_sem():
     mapping = st.session_state["measurement_model"]
 
     for c in construct_names:
+        sub_map_for_assignment = st.session_state.get("subconstruct_map", {})
+        child_constructs = sub_map_for_assignment.get(c, [])
+        child_assigned_vars = [
+            v for v, con in mapping.items()
+            if con in child_constructs
+        ]
         current = [v for v, con in mapping.items() if con == c]
         selected = st.multiselect(
             f"🔷 {c}",
@@ -538,6 +602,7 @@ def step_sem():
             default=[v for v in current if v in all_vars],
             key=f"assign_{c}"
         )
+        selected = [v for v in selected if v not in child_assigned_vars]
         for v in all_vars:
             if mapping.get(v) == c:
                 mapping[v] = None
@@ -552,83 +617,385 @@ def step_sem():
     else:
         st.success("所有变量已分配完毕")
 
-        # =========================
-        # Step 5.4 构念内因子分析
-        # =========================
-    st.subheader("Step 5.4 构念内因子分析")
-    st.caption("对每个构念的观测变量做因子分析，载荷过低（<0.4）建议删除。若构念只剩1个变量，将自动转为内生变量。")
+    st.write("**构念内 EFA / KMO / Bartlett 诊断**")
+    st.caption("对每个构念分别做探索性因子分析、KMO 和 Bartlett 检验，并根据载荷、KMO 和潜在多因子结构给出删减变量或二阶构念建议。")
 
     df = st.session_state["df"]
-    run_fa = st.button("运行构念内因子分析")
+    run_fa = st.button("运行构念内 EFA 诊断")
 
     if run_fa or st.session_state.get("fa_done", False):
 
         fa_results = {}
+        efa_suggestions = {}
 
         for c in construct_names:
             indicators = [v for v, con in mapping.items() if con == c]
             if len(indicators) < 2:
                 continue
 
-            sub_df = df[indicators].dropna()
-            if sub_df.shape[0] < 2:
+            sub_df = df[indicators].select_dtypes(include='number').dropna()
+            valid_indicators = sub_df.columns.tolist()
+            if len(valid_indicators) < 2:
+                st.warning(f"{c} 可用于 EFA 的数值型指标不足2个")
+                continue
+            if sub_df.shape[0] < 3:
+                st.warning(f"{c} 完整样本数不足，无法稳定运行 EFA/KMO/Bartlett")
                 continue
 
             try:
                 from sklearn.decomposition import FactorAnalysis
+
+                kmo_all, kmo_model = calculate_kmo(sub_df)
+                bartlett_chi, bartlett_p = calculate_bartlett_sphericity(sub_df)
+
+                corr = sub_df.corr()
+                eigenvalues = np.linalg.eigvalsh(corr).tolist()
+                eigenvalues = sorted(eigenvalues, reverse=True)
+                suggested_factors = sum(ev > 1 for ev in eigenvalues)
+                max_factors = max(1, min(len(valid_indicators) - 1, suggested_factors))
+
                 fa = FactorAnalysis(n_components=1, random_state=0)
                 fa.fit(sub_df)
-                loadings = dict(zip(indicators, fa.components_[0]))
-                fa_results[c] = loadings
+                loadings = dict(zip(valid_indicators, fa.components_[0]))
+
+                multi_factor_loadings = None
+                if max_factors >= 2:
+                    try:
+                        from factor_analyzer import FactorAnalyzer
+                        efa = FactorAnalyzer(n_factors=max_factors, rotation="varimax")
+                        efa.fit(sub_df)
+                        multi_factor_loadings = pd.DataFrame(
+                            efa.loadings_,
+                            index=valid_indicators,
+                            columns=[f"Factor{i + 1}" for i in range(max_factors)]
+                        )
+                    except Exception:
+                        multi_factor_loadings = None
+
+                fa_results[c] = {
+                    "loadings": loadings,
+                    "kmo_model": kmo_model,
+                    "kmo_all": dict(zip(valid_indicators, kmo_all)),
+                    "bartlett_chi": bartlett_chi,
+                    "bartlett_p": bartlett_p,
+                    "eigenvalues": eigenvalues,
+                    "suggested_factors": suggested_factors,
+                    "multi_factor_loadings": multi_factor_loadings
+                }
             except Exception as e:
-                st.warning(f"{c} 因子分析失败：{e}")
+                st.warning(f"{c} EFA/KMO/Bartlett 诊断失败：{e}")
 
         if fa_results:
             st.session_state["fa_done"] = True
             st.session_state["fa_results"] = fa_results
 
-            for c, loadings in fa_results.items():
+            for c, result in fa_results.items():
+                loadings = result["loadings"]
                 low_load = [v for v, l in loadings.items() if abs(l) < 0.4]
+                low_kmo = [v for v, k in result["kmo_all"].items() if k < 0.6]
+                needs_subconstruct = result["suggested_factors"] >= 2
 
                 with st.expander(f"🔷 {c}（{len(loadings)}个变量）" + (
-                f"  ⚠️ {len(low_load)}个低载荷变量" if low_load else "  ✅ 载荷正常")):
+                f"  ⚠️ 建议检查" if (low_load or low_kmo or needs_subconstruct) else "  ✅ 结构较稳定")):
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("整体 KMO", round(result["kmo_model"], 3))
+                    col2.metric("Bartlett p", round(result["bartlett_p"], 5))
+                    col3.metric("建议因子数", max(1, result["suggested_factors"]))
+
+                    if result["kmo_model"] < 0.6:
+                        st.warning("整体 KMO < 0.6：该构念的指标共同性偏弱，建议优先删减低 KMO 或低载荷变量。")
+                    if result["bartlett_p"] >= 0.05:
+                        st.warning("Bartlett 检验不显著：变量相关性不足，可能不适合做因子分析。")
+                    if needs_subconstruct:
+                        st.info(f"特征值提示可能存在 {result['suggested_factors']} 个因子，可考虑在 Step 5.2 中设置二阶构念。")
+
                     load_df = pd.DataFrame({
                         "变量": list(loadings.keys()),
                         "因子载荷": [round(l, 3) for l in loadings.values()],
+                        "变量KMO": [round(result["kmo_all"][v], 3) for v in loadings.keys()],
                     })
-                    load_df["状态"] = load_df["因子载荷"].apply(
-                        lambda x: "⚠️ 建议删除" if abs(x) < 0.4 else ("⚠️ 偏低" if abs(x) < 0.6 else "✅ 良好")
+                    load_df["状态"] = load_df.apply(
+                        lambda row: "⚠️ 建议删除/调整" if abs(row["因子载荷"]) < 0.4 or row["变量KMO"] < 0.6
+                        else ("⚠️ 偏低" if abs(row["因子载荷"]) < 0.6 or row["变量KMO"] < 0.7 else "✅ 良好"),
+                        axis=1
                     )
                     st.dataframe(load_df.sort_values("因子载荷", key=abs, ascending=False).reset_index(drop=True))
 
-                    if low_load:
-                        st.warning(f"建议从构念 {c} 中删除：{low_load}")
-                        st.caption("👆 请在上方 Step 5.3 的对应构念 multiselect 中手动移除这些变量，然后重新运行因子分析")
+                    delete_candidates = sorted(set(low_load + low_kmo))
+                    if delete_candidates:
+                        st.warning(f"建议从构念 {c} 中优先检查或删除：{delete_candidates}")
+                        st.caption("请在上方该构念的变量归属 multiselect 中手动移除变量，然后重新运行 EFA 诊断。")
 
-            # 检查是否有构念只剩1个变量，自动转为内生变量
-            auto_converted = []
+                    if result["multi_factor_loadings"] is not None:
+                        st.write("多因子探索载荷（用于判断是否需要拆分子构念）：")
+                        st.dataframe(result["multi_factor_loadings"].round(3))
+
+                        proposed_groups = {}
+                        for variable, row in result["multi_factor_loadings"].abs().iterrows():
+                            proposed_groups.setdefault(row.idxmax(), []).append(variable)
+                        proposed_groups = {k: v for k, v in proposed_groups.items() if len(v) >= 2}
+                        if len(proposed_groups) >= 2:
+                            efa_suggestions[c] = proposed_groups
+                            st.info(f"可考虑将 {c} 拆为子构念：{proposed_groups}")
+
+            st.session_state["efa_subconstruct_suggestions"] = efa_suggestions
+
+    measurement_construct_names = list(construct_names)
+    for con in mapping.values():
+        if con and con not in measurement_construct_names:
+            measurement_construct_names.append(con)
+
+    singleton_constructs = {
+        c: [v for v, con in mapping.items() if con == c]
+        for c in measurement_construct_names
+    }
+    singleton_constructs = {c: vars_[0] for c, vars_ in singleton_constructs.items() if len(vars_) == 1}
+
+    if singleton_constructs:
+        st.write("**单指标构念处理**")
+        st.caption("构念只剩一个变量时，不能作为常规潜变量测量模型。请选择从测量模型删除，或转为内生变量。")
+        singleton_actions = {}
+        for c, var in singleton_constructs.items():
+            singleton_actions[c] = st.radio(
+                f"{c} 只包含变量 [{var}]，请选择处理方式",
+                ["转为内生变量", "从测量模型删除"],
+                key=f"singleton_action_{c}",
+                horizontal=True
+            )
+
+        if st.button("应用单指标构念处理"):
             current_endo = st.session_state.get("endogenous_vars", [])
+            sub_map = st.session_state.get("subconstruct_map", {})
+            for c, action in singleton_actions.items():
+                var = singleton_constructs[c]
+                mapping[var] = None
+                if action == "转为内生变量" and var not in current_endo:
+                    current_endo.append(var)
+                for parent_name, children in list(sub_map.items()):
+                    if c in children:
+                        sub_map[parent_name] = [child for child in children if child != c]
+                    if not sub_map[parent_name]:
+                        del sub_map[parent_name]
 
-            for c in construct_names:
-                indicators = [v for v, con in mapping.items() if con == c]
-                if len(indicators) == 1:
-                    var = indicators[0]
-                    if var not in current_endo:
-                        current_endo.append(var)
-                        auto_converted.append((c, var))
-                    # 从构念中移除
-                    mapping[var] = None
+            st.session_state["endogenous_vars"] = current_endo
+            st.session_state["measurement_model"] = mapping
+            st.session_state["subconstruct_map"] = sub_map
+            st.success("已处理单指标构念")
+            st.rerun()
 
-            if auto_converted:
-                st.session_state["endogenous_vars"] = current_endo
+    # 子构念
+    st.subheader("Step 5.2 子构念（二阶构念）设置")
+
+    if "subconstruct_map" not in st.session_state:
+        st.session_state["subconstruct_map"] = {}
+    sub_map = st.session_state["subconstruct_map"]
+
+    efa_suggestions = st.session_state.get("efa_subconstruct_suggestions", {})
+    if efa_suggestions:
+        st.write("EFA 建议的潜在子构念划分：")
+        for parent_name, groups in efa_suggestions.items():
+            st.write(f"  {parent_name}: {groups}")
+
+    parent = st.selectbox("父构念", construct_names, key="sub_parent")
+    parent_vars = [v for v, con in mapping.items() if con == parent and v in all_vars]
+
+    if parent_vars:
+        new_sub_name = st.text_input(
+            "新建子构念名称",
+            value=f"{parent}_Sub{len(sub_map.get(parent, [])) + 1}",
+            key="new_subconstruct_name"
+        )
+        sub_vars = st.multiselect(
+            "该子构念包含的变量",
+            parent_vars,
+            key="new_subconstruct_vars"
+        )
+
+        if st.button("添加子构念"):
+            new_sub_name = new_sub_name.strip()
+            existing_children = [child for children in sub_map.values() for child in children]
+
+            if not new_sub_name:
+                st.warning("请先输入子构念名称")
+            elif new_sub_name in construct_names or new_sub_name in existing_children:
+                st.warning("该子构念名称已存在，请更换名称")
+            elif any(ch in new_sub_name for ch in [' ', '-', '/', '(', ')', '.']):
+                st.warning("子构念名称请勿包含空格或特殊字符，建议使用下划线")
+            elif len(sub_vars) < 2:
+                st.warning("子构念至少建议包含2个变量")
+            else:
+                for v in sub_vars:
+                    mapping[v] = new_sub_name
+
+                sub_map.setdefault(parent, [])
+                sub_map[parent].append(new_sub_name)
+
                 st.session_state["measurement_model"] = mapping
-                for c, var in auto_converted:
-                    st.warning(f"构念 {c} 只剩1个变量 [{var}]，已自动转为内生变量")
+                st.session_state["subconstruct_map"] = sub_map
+                st.success(f"已创建子构念：{parent} ← {new_sub_name}")
+                st.rerun()
+    else:
+        st.info("该父构念当前没有可分配给新子构念的直接变量。若变量已被拆到子构念中，可继续查看或清空当前子构念结构。")
+
+    if sub_map:
+        st.write("当前子构念结构：")
+        for k, children in sub_map.items():
+            st.write(f"  {k} ← {children}")
+            parent_direct_vars = [v for v, con in mapping.items() if con == k]
+            if parent_direct_vars:
+                st.info(f"{k} 仍有变量未分配到子构念，这些变量会作为父构念的直接观测变量进入 SEM：{parent_direct_vars}")
+            for child in children:
+                child_vars = [v for v, con in mapping.items() if con == child]
+                available_child_vars = [
+                    v for v in all_vars
+                    if mapping.get(v) in [k, child]
+                ]
+                updated_child_vars = st.multiselect(
+                    f"{child} 的变量归属",
+                    available_child_vars,
+                    default=[v for v in child_vars if v in available_child_vars],
+                    key=f"sub_assign_{k}_{child}"
+                )
+
+                if set(updated_child_vars) != set(child_vars):
+                    for v in available_child_vars:
+                        if mapping.get(v) == child:
+                            mapping[v] = k
+                    for v in updated_child_vars:
+                        mapping[v] = child
+                    st.session_state["measurement_model"] = mapping
+
+                if len(updated_child_vars) < 2:
+                    st.warning(f"{child} 当前变量少于2个，运行 SEM 时不会作为有效子构念进入二阶模型。")
+        if st.button("清空子构念设置"):
+            for parent_name, children in sub_map.items():
+                for child in children:
+                    for v, con in list(mapping.items()):
+                        if con == child:
+                            mapping[v] = parent_name
+            st.session_state["measurement_model"] = mapping
+            st.session_state["subconstruct_map"] = {}
+            st.rerun()
+    else:
+        st.info("尚未设置子构念")
+
+    # =========================
+    # Step 5.5 CFA 验证
+    # =========================
+    st.subheader("Step 5.5 CFA 验证")
+    st.caption("在进入结构路径设定前，对每个构念单独运行确认性因子分析（CFA），用于检查测量模型拟合和标准化载荷。")
+
+    measurement_construct_names = list(construct_names)
+    for con in mapping.values():
+        if con and con not in measurement_construct_names:
+            measurement_construct_names.append(con)
+
+    cfa_candidates = {
+        c: [v for v, con in mapping.items() if con == c and v in df.columns]
+        for c in measurement_construct_names
+    }
+    cfa_candidates = {c: vars_ for c, vars_ in cfa_candidates.items() if len(vars_) >= 2}
+
+    if not cfa_candidates:
+        st.info("暂无可运行 CFA 的构念。每个构念至少需要 2 个观测变量。")
+    else:
+        cfa_target = st.selectbox(
+            "选择 CFA 构念",
+            ["全部构念"] + list(cfa_candidates.keys()),
+            key="cfa_target"
+        )
+        cfa_estimator = st.selectbox(
+            "CFA 估计方法",
+            ["ML", "MLR", "GLS"],
+            key="cfa_estimator_sel"
+        )
+        st.caption("ML/MLR 使用 FIML 处理缺失值；GLS 需要完整样本，将自动删除含缺失值的行。")
+
+        short_constructs = [c for c, vars_ in cfa_candidates.items() if len(vars_) == 2]
+        if short_constructs:
+            st.warning(f"以下构念只有 2 个观测变量，CFA 可能识别不足或拟合指标信息有限：{short_constructs}")
+
+        if st.button("运行 CFA 验证"):
+            import os
+
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            data_path = os.path.join(base_dir, "sem_data.csv")
+            data_path_r = data_path.replace("\\", "/")
+            r_script_path = os.path.join(base_dir, "cfa_check.R")
+
+            df.to_csv(data_path, index=False)
+
+            selected_constructs = (
+                list(cfa_candidates.keys())
+                if cfa_target == "全部构念"
+                else [cfa_target]
+            )
+
+            cfa_outputs = {}
+
+            for c in selected_constructs:
+                indicators = cfa_candidates[c]
+                model_str = build_single_construct_cfa_model(c, indicators)
+
+                if not model_str.strip():
+                    cfa_outputs[c] = ("", "模型为空，无法运行 CFA。")
+                    continue
+
+                cfa_script = f"""
+library(lavaan)
+data_raw <- read.csv("{data_path_r}", check.names = FALSE)
+data <- data_raw[, sapply(data_raw, is.numeric), drop = FALSE]
+
+model <- '
+{model_str}
+'
+
+estimator_name <- "{cfa_estimator}"
+
+if (estimator_name == "GLS") {{
+  data <- na.omit(data)
+  fit <- cfa(model, data = data, estimator = estimator_name, std.lv = FALSE)
+}} else {{
+  fit <- cfa(model, data = data, estimator = estimator_name, std.lv = FALSE, missing = "fiml")
+}}
+
+cat("MODEL\\n")
+cat(model)
+cat("\\n\\nESTIMATOR\\n")
+cat(estimator_name)
+cat("\\nN_USED\\n")
+cat(lavInspect(fit, "nobs"))
+cat("\\n\\nFIT_MEASURES\\n")
+print(round(fitMeasures(fit, c("chisq", "df", "pvalue", "cfi", "tli", "rmsea", "srmr")), 4))
+cat("\\n\\nSTANDARDIZED_LOADINGS\\n")
+std <- standardizedSolution(fit)
+print(std[std$op == "=~", c("lhs", "rhs", "est.std", "pvalue")])
+cat("\\n\\nSUMMARY\\n")
+print(summary(fit, fit.measures = TRUE, standardized = TRUE))
+"""
+
+                with open(r_script_path, "w", encoding="utf-8") as f:
+                    f.write(cfa_script)
+
+                out, err = run_r_script(r_script_path)
+                cfa_outputs[c] = (out, err)
+
+            st.session_state["cfa_outputs"] = cfa_outputs
+
+        if st.session_state.get("cfa_outputs"):
+            for c, (out, err) in st.session_state["cfa_outputs"].items():
+                with st.expander(f"CFA 结果：{c}", expanded=True):
+                    if out:
+                        st.text(out)
+                    else:
+                        st.text("无输出")
+                    if err:
+                        st.error(err)
 #路径设定
     import time
     import uuid
 
-    st.subheader("Step 5.5 路径设定")
+    st.subheader("Step 5.6 路径设定")
 
     valid_sources = construct_names + st.session_state.get("exogenous_vars", []) + st.session_state.get(
         "endogenous_vars", [])
@@ -719,19 +1086,21 @@ def step_sem():
     # =========================
     # 模型设置（保持你原样）
     # =========================
-    st.subheader("Step 5.6 模型设置")
+    st.subheader("Step 5.7 模型设置")
 
     st.session_state["ident_method"] = st.selectbox(
         "识别方式",
         ["fix_loading", "fix_variance"],
         key="ident_method_sel"
     )
+    st.caption("fix_loading：固定每个潜变量第一条载荷为 1；fix_variance：释放第一条载荷并固定潜变量方差为 1。")
 
     estimator = st.selectbox(
         "估计方法",
         ["ML", "MLR", "GLS"],
         key="estimator_sel"
     )
+    st.caption("ML/MLR 使用 FIML 处理缺失值；GLS 需要完整样本，将自动删除含缺失值的行。")
 
     st.subheader("残差相关设置（根据修正指数添加）")
     st.caption("运行'获取修正指数'后，在此手动添加需要的残差相关，格式：变量1,变量2")
@@ -785,14 +1154,27 @@ def step_sem():
 
         mi_script = f"""
     library(lavaan)
-    data_raw <- read.csv("{data_path}")
-    data <- data_raw[, sapply(data_raw, is.numeric)]
+    data_raw <- read.csv("{data_path}", check.names = FALSE)
+    data <- data_raw[, sapply(data_raw, is.numeric), drop = FALSE]
 
     model <- '
     {model_str}
     '
 
-    fit <- suppressWarnings(sem(model, data=data, estimator="{estimator}"))
+    estimator_name <- "{estimator}"
+
+    if (estimator_name == "GLS") {{
+      data <- na.omit(data)
+      fit <- suppressWarnings(sem(model, data = data, estimator = estimator_name))
+    }} else {{
+      fit <- suppressWarnings(sem(model, data = data, estimator = estimator_name, missing = "fiml"))
+    }}
+
+    cat("ESTIMATOR\\n")
+    cat(estimator_name)
+    cat("\\nN_USED\\n")
+    cat(lavInspect(fit, "nobs"))
+    cat("\\n\\n")
 
     mi <- suppressWarnings(modindices(fit, sort.=TRUE, maximum.number=20))
     print(mi)
@@ -832,13 +1214,27 @@ def step_sem():
 
         r_script = f"""
 library(lavaan)
-data <- read.csv("sem_data.csv")
+data_raw <- read.csv("{data_path_r}", check.names = FALSE)
+data <- data_raw[, sapply(data_raw, is.numeric), drop = FALSE]
 
 model <- '
 {model_str}
 '
 
-fit <- sem(model, data = data, estimator = "{estimator}")
+estimator_name <- "{estimator}"
+
+if (estimator_name == "GLS") {{
+  data <- na.omit(data)
+  fit <- sem(model, data = data, estimator = estimator_name)
+}} else {{
+  fit <- sem(model, data = data, estimator = estimator_name, missing = "fiml")
+}}
+
+cat("ESTIMATOR\\n")
+cat(estimator_name)
+cat("\\nN_USED\\n")
+cat(lavInspect(fit, "nobs"))
+cat("\\n\\n")
 summary(fit, fit.measures=TRUE, standardized=TRUE)
 
 """

@@ -12,3 +12,5 @@ venv/
 # R
 .Rhistory
 .RData
+
+*.csv

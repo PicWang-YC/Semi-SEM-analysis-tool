@@ -1,38 +1,55 @@
 
 library(lavaan)
-data <- read.csv("sem_data.csv")
+data_raw <- read.csv("C:/Users/yecan/PycharmProjects/pythonProject3/sem_data.csv", check.names = FALSE)
+data <- data_raw[, sapply(data_raw, is.numeric), drop = FALSE]
 
 model <- '
-Physiological_State =~ 1*AvgHR + AvgHRV + AvgRmssd + AvgPnn50 + StressSdk
-Oculomotor_Attention =~ 1*EyeYLeft + EyeYRight
-Vehicle_Control =~ 1*steeringWheelStd + accCarX + accCarY
-Driving_Dynamics =~ 1*Yaw + YawStd
-Fatigue_Sleep =~ 1*meanSleepTot + stdSleepTot
-Voice_Emotion =~ 1*VoiceN + VoiceT + VoiceA + voiceAvg + voiceWeightAvg
+Physiological_State =~ NA*AvgHR + AvgHRV + AvgSdnn + AvgRmssd + AvgPnn20 + AvgPnn50 + StdHR + StdHRV
+Visual_Attention =~ NA*EyeYRight + EyeYLeft + EyeDimLeftStd + EyeDimRightStd + EyeYLeftStd + EyeYRightStd
+Vehicle_Control_Anomaly =~ NA*steeringWheelStd + accCarZStd + accCarXStd + accCarYStd + accCarX + accCarY + accCarZ
+Physiological_State ~~ 1*Physiological_State
+Visual_Attention ~~ 1*Visual_Attention
+Vehicle_Control_Anomaly ~~ 1*Vehicle_Control_Anomaly
 Physiological_State ~ Age
-Voice_Emotion ~ Gender
-Vehicle_Control ~ DrivingAge
-Driving_Dynamics ~ Freq
-Physiological_State ~ Fatigue_Sleep
-Oculomotor_Attention ~ Physiological_State
-Oculomotor_Attention ~ Voice_Emotion
-Vehicle_Control ~ Oculomotor_Attention
-Vehicle_Control ~ Driving_Dynamics
-UnsafeBehaviors ~ Vehicle_Control
-UnsafeBehaviors ~ Driving_Dynamics
-UnsafeBehaviors ~ Physiological_State
-UnsafeBehaviors ~ Voice_Emotion
-Driving_Dynamics ~ Vehicle_Control
-UnsafeBehaviors ~ Fatigue_Sleep
-Oculomotor_Attention ~ Freq
+UnsafeBehaviors ~ Gender
+Vehicle_Control_Anomaly ~ Freq
+Physiological_State ~ CortisolBefore
+Physiological_State ~ voiceWeightAvg
+Visual_Attention ~ Physiological_State
+Vehicle_Control_Anomaly ~ Physiological_State
+UnsafeBehaviors ~ Vehicle_Control_Anomaly
+Visual_Attention ~ Freq
+Visual_Attention ~ Vehicle_Control_Anomaly
+UnsafeBehaviors ~ Visual_Attention
+AvgHR ~~ AvgHRV
+AvgSdnn ~~ StdHRV
+EyeYRight ~~ EyeYLeft
+EyeDimLeftStd ~~ EyeDimRightStd
+AvgPnn20 ~~ AvgPnn50
+steeringWheelStd ~~ accCarY
+accCarXStd ~~ accCarYStd
+AvgRmssd ~~ StdHR
+accCarZStd ~~ accCarXStd
+steeringWheelStd ~~ accCarYStd
 AvgRmssd ~~ AvgPnn50
-VoiceT ~~ voiceAvg
-VoiceT ~~ VoiceA
-voiceAvg ~~ voiceWeightAvg
-meanSleepTot ~~ stdSleepTot
-accCarX ~~ accCarY
+accCarZStd ~~ accCarYStd
+accCarYStd ~~ accCarX
+accCarXStd ~~ accCarZ
 '
 
-fit <- sem(model, data = data, estimator = "MLR")
+estimator_name <- "MLR"
+
+if (estimator_name == "GLS") {
+  data <- na.omit(data)
+  fit <- sem(model, data = data, estimator = estimator_name)
+} else {
+  fit <- sem(model, data = data, estimator = estimator_name, missing = "fiml")
+}
+
+cat("ESTIMATOR\n")
+cat(estimator_name)
+cat("\nN_USED\n")
+cat(lavInspect(fit, "nobs"))
+cat("\n\n")
 summary(fit, fit.measures=TRUE, standardized=TRUE)
 

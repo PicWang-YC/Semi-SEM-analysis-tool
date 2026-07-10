@@ -20,14 +20,28 @@ Rules:
 1. Group variables into meaningful constructs
 2. Construct names must be valid R variable names (no spaces, no special characters)
 3. Identify exogenous variables (not part of constructs)
-4. Provide 3 different grouping schemes
+4. After grouping variables into constructs, judge whether any construct may contain meaningful subconstructs
+5. Use subconstructs when variables in the same broad construct reflect distinct dimensions, mechanisms, or statistics
+6. If a broad construct has subconstructs, assign variables to the subconstructs, keep the broad parent construct with an empty variable list, and map parent -> subconstruct names in "subconstructs"
+7. Do not create subconstructs unless there is a clear conceptual reason
+8. Provide 3 different grouping schemes
+
+Example:
+- Eye diameter mean and median can belong to Pupil_Size
+- Eye diameter standard deviation and coefficient of variation can belong to Pupil_Variability
+- Pupil_Size and Pupil_Variability can both be subconstructs of Pupil_Change
 
 Output JSON:
 {{
   "model_1": {{
     "constructs": {{
-      "ConstructA": ["var1", "var2"],
-      "ConstructB": ["var3"]
+      "BroadConstruct": [],
+      "SubConstructA": ["var1", "var2"],
+      "SubConstructB": ["var3", "var4"],
+      "ConstructC": ["var5", "var6"]
+    }},
+    "subconstructs": {{
+      "BroadConstruct": ["SubConstructA", "SubConstructB"]
     }},
     "exogenous": ["varX"]
   }},
