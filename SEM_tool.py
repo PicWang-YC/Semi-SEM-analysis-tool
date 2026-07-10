@@ -172,16 +172,21 @@ def build_single_construct_cfa_model(construct, indicators):
     model += f"\n{safe_name(construct)} ~~ 1*{safe_name(construct)}"
     return model
 
+st.sidebar.header("⚙️ 环境配置")
+r_path_input = st.sidebar.text_input(
+    "Rscript 路径配置", 
+    value=r"Your path",
+    help="Windows 通常为绝对路径，Mac/Linux 用户通常填写 Rscript 即可"
+)
 
-def run_r_script(script_path):
-    r_path = r"C:\Program Files\R\R-4.5.1\bin\Rscript.exe"
+# 2. 修改你的运行函数，把路径作为参数传进去
+def run_r_script(script_path, r_path):
     result = subprocess.run(
         [r_path, script_path],
         capture_output=True,
         text=True
     )
     return result.stdout, result.stderr
-
 
 # =========================
 # Step 1 上传数据
@@ -784,7 +789,7 @@ def step_sem():
             st.rerun()
 
     # 子构念
-    st.subheader("Step 5.2 子构念（二阶构念）设置")
+    st.subheader("Step 5.2 二阶构念设置")
 
     if "subconstruct_map" not in st.session_state:
         st.session_state["subconstruct_map"] = {}
@@ -796,7 +801,7 @@ def step_sem():
         for parent_name, groups in efa_suggestions.items():
             st.write(f"  {parent_name}: {groups}")
 
-    parent = st.selectbox("父构念", construct_names, key="sub_parent")
+    parent = st.selectbox("一阶构念", construct_names, key="sub_parent")
     parent_vars = [v for v, con in mapping.items() if con == parent and v in all_vars]
 
     if parent_vars:
@@ -835,7 +840,7 @@ def step_sem():
                 st.success(f"已创建子构念：{parent} ← {new_sub_name}")
                 st.rerun()
     else:
-        st.info("该父构念当前没有可分配给新子构念的直接变量。若变量已被拆到子构念中，可继续查看或清空当前子构念结构。")
+        st.info("该一阶构念当前没有可分配给新子构念的直接变量。若变量已被拆到子构念中，可继续查看或清空当前子构念结构。")
 
     if sub_map:
         st.write("当前子构念结构：")
@@ -843,7 +848,7 @@ def step_sem():
             st.write(f"  {k} ← {children}")
             parent_direct_vars = [v for v, con in mapping.items() if con == k]
             if parent_direct_vars:
-                st.info(f"{k} 仍有变量未分配到子构念，这些变量会作为父构念的直接观测变量进入 SEM：{parent_direct_vars}")
+                st.info(f"{k} 仍有变量未分配到子构念，这些变量会作为一阶构念的直接观测变量进入 SEM：{parent_direct_vars}")
             for child in children:
                 child_vars = [v for v, con in mapping.items() if con == child]
                 available_child_vars = [
