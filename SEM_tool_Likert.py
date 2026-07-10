@@ -50,7 +50,7 @@ def load_data(file):
 
 
 def run_r_script(script, filename="measure_sem_temp.R"):
-    r_path = r"C:\Program Files\R\R-4.5.1\bin\Rscript.exe"
+    r_path = r"Your path\Rscript.exe"
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
     with open(script_path, "w", encoding="utf-8") as f:
         f.write(script)
